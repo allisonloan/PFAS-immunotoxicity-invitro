@@ -1,5 +1,5 @@
 # PFAS-immunotoxicity-invitro
-PBMCs from human donors exposused to varying concentrations of PFOS, PFOA, PFNA,PFDA, PFHxS, and GenX followied by exposure to LPS or PHA. 
+PBMCs from human donors exposused to varying concentrations of PFOS, PFOA, PFNA,PFDA, PFHxS, and GenX followed by exposure to LPS or PHA to measure the effect of background PFAS exposure on the immune system following a simulated immune challenge
 
 PBMC maintenance
 Purified PBMCs from 8 healthy adult donors (4 males and 4 females) were sourced from a commercial supplier (Miltenyi Biotec, USA, cat#150-000-572). Along with the PBMCs, corresponding plasma samples were also provided for baseline PFAS analysis. Upon arrival, PBMCs were aliquoted in 10% dimethyl sulfoxide (DMSO, Millipore Sigma, cat#472301) and 90% heat-inactivated fetal bovine serum (FBS, Thermo Fisher, cat#A5256701) and stored at -80°C for future analysis. Corresponding plasma samples were also stored at -80°C for future analysis.
