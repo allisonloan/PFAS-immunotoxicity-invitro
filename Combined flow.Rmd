@@ -1,0 +1,1088 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+#Load libraries
+```{r}
+library(readxl)
+library(tidyr)  
+library(dplyr)  
+library(ggsignif)
+library(ggplot2)
+library(broom) 
+library(rstatix)
+library(ggpubr)
+library(stringr)
+library(viridis)
+library(emmeans)
+library(purrr)
+library(car)
+library(extrafont)
+library(plotrix)
+
+output_dir <- "../Flow cyto (PBMCs)/plots_output/"
+dir.create(output_dir, showWarnings = FALSE)
+custom_colors <- c("#330597","#8405a7","#b12a90","#d35171","#f68f44","#fec029")
+```
+
+#Load data
+```{r}
+# Load data and add a 'Chemical' column for each dataset
+data_PFNA <- read.csv("../Flow cyto (PBMCs)/Jan 9 2025 PFNA/09-Jan-2025.wsp FlowJo table.csv") %>%
+  mutate(Chemical = "PFNA")
+data_PFOA <- read.csv("../Flow cyto (PBMCs)/Dec 19 2024 PFOA/20-Dec-2024 (UNMIXING 1).wsp FlowJo table.csv") %>%
+  mutate(Chemical = "PFOA")
+data_PFDA <- read.csv("../Flow cyto (PBMCs)/Jan 16 2025 PFDA/16-Jan-2025.wsp FlowJo table.csv") %>%
+  mutate(Chemical = "PFDA")
+data_PFHxS <- read.csv("../Flow cyto (PBMCs)/Jan 16 2025 PFHxS/16-Jan-2025.wsp FlowJo table.csv") %>%
+  mutate(Chemical = "PFHxS")
+data_PFHxS$X <- str_replace(data_PFHxS$X, "PFHxS\\+", "PFHxS +") #typo in one of the conditions
+data_PFOS <- read.csv("../Flow cyto (PBMCs)/Dec 12 2024 (new) PFOS/20-Dec-2024.wsp FlowJo table.csv") %>%
+  mutate(Chemical = "PFOS")
+data_GenX <- read.csv("../Flow cyto (PBMCs)/Jan 31 2025 GenX/31-Jan-2025.wsp FlowJo table.csv") %>%
+  mutate(Chemical = "GenX")
+
+# Combine all datasets and include the 'Chemical' column
+data <- bind_rows(data_PFNA, data_PFOA, data_PFDA, data_PFHxS, data_PFOS, data_GenX)
+
+# Initial data cleaning and renaming
+cleaned_data <- data %>%
+  mutate(
+    Sample = word(X, 1),
+    Group = word(X, 2),
+    Treatment = str_remove(X, ".*? .*? ") %>% # Remove the first two parts
+                str_remove("WLSM") %>%        # Remove "WLSM"
+                str_remove("\\.fcs") %>%      # Remove ".fcs"
+                str_trim()                    # Trim extra spaces
+  ) %>%
+  filter(Group %in% c("M1", "M2", "M3", "M4", "F1", "F2", "F3", "F4")) %>%
+  rename(
+    CD3 = cells.Single.Cells.live.CD3...Freq..of.Parent....,
+    CD3_fi = cells.Single.Cells.live.CD3.CFSE...Area.subset...Mean..CFSE...Area.,
+    CD4 = cells.Single.Cells.live.CD4...Freq..of.Parent....,
+    CD4_fi = cells.Single.Cells.live.CD4.CFSE...Area.subset...Mean..CFSE...Area.,
+    CD8 = cells.Single.Cells.live.CD8...Freq..of.Parent....,
+    CD8_fi = cells.Single.Cells.live.CD8.CFSE...Area.subset...Mean..CFSE...Area.,
+    live = cells.Single.Cells.live...Freq..of.Parent....,
+    CD3_ud = cells.Single.Cells.live.CD3.CFSE...Area.subset.undivided...Freq..of.Parent....,
+    CD4_ud = cells.Single.Cells.live.CD4.CFSE...Area.subset.undivided...Freq..of.Parent....,
+    CD8_ud = cells.Single.Cells.live.CD8.CFSE...Area.subset.undivided...Freq..of.Parent....,
+    Ms = cells.Single.Cells.live.Remainder...Freq..of.Parent....,
+    Ms_fi = cells.Single.Cells.live.Remainder...Mean..CFSE...Area.,
+    Ms_ud = cells.Single.Cells.live.Remainder.undivided...Freq..of.Parent....
+  ) %>%
+  mutate(
+    Sex = ifelse(str_starts(Group, "M"), "Male", "Female"),
+    Smokers = ifelse(Group %in% c("M1", "M3", "M4", "F1"), "Smoker", "Non-Smoker")
+  ) %>%
+  select(Chemical, Sample, Group, Treatment, Sex, Smokers, CD3, CD3_fi, CD4, CD4_fi, CD8, CD8_fi, live, CD3_ud, CD4_ud, CD8_ud, Ms, Ms_fi, Ms_ud)
+
+cleaned_data <- cleaned_data %>%
+  mutate(
+    Treatment = case_when(
+      str_detect(Treatment, "PFHxS\\+ PHA100uM") ~ "PFHxS + PHA100uM",
+      str_detect(Treatment, "PFHxS\\+ PHA0.5uM") ~ "PFHxS + PHA0.5uM",
+      TRUE ~ Treatment  # Leave other values unchanged
+    )
+  )
+
+# Add treatment mapping
+cleaned_data <- cleaned_data %>%
+  mutate(
+    Treatment = str_trim(Treatment),  # Remove leading and trailing whitespace
+    Treatment = case_when(
+      str_detect(Treatment, "vehicle control \\+ LPS") ~ "LPS + Vehicle",
+      str_detect(Treatment, "vehicle control \\+ PHA") ~ "PHA + Vehicle",
+      str_detect(Treatment, "PFNA") ~ str_replace(Treatment, "PFNA \\+ ", ""),
+      str_detect(Treatment, "PFOA") ~ str_replace(Treatment, "PFOA \\+ ", ""),
+      str_detect(Treatment, "PFDA") ~ str_replace(Treatment, "PFDA \\+ ", ""),
+      str_detect(Treatment, "PFOS") ~ str_replace(Treatment, "PFOS \\+ ", ""),
+      str_detect(Treatment, "PFHxS") ~ str_replace(Treatment, "PFHxS \\+ ", ""),
+      str_detect(Treatment, "GenX") ~ str_replace(Treatment, "GenX \\+ ", ""),
+      TRUE ~ Treatment
+    )
+  )
+# Ensure numeric conversion for all relevant columns
+numeric_columns <- c("CD3", "CD4", "CD8",  "live", "CD3_ud", "CD4_ud", "CD8_ud", "CD8_fi", "CD4_fi", "CD3_fi", "Ms", "Ms_fi", "Ms_ud")
+cleaned_data <- cleaned_data %>%
+  mutate(across(all_of(numeric_columns), ~ as.numeric(gsub(",", ".", .))))
+
+# Add "_divided" columns
+ud_columns <- grep("_ud$", names(cleaned_data), value = TRUE)
+for (col in ud_columns) {
+  new_col_name <- sub("_ud$", "_divided", col)
+  cleaned_data[[new_col_name]] <- 100 - cleaned_data[[col]]
+}
+
+cleaned_data <- replace(cleaned_data, is.na(cleaned_data), 0)
+
+# Normalize by vehicle
+ normalize_by_vehicle <- function(df) {
+  numeric_columns <- c("CD3_fi", "CD4_fi", "CD8_fi", "Ms_fi")
+  
+  for (col in numeric_columns) {
+    vehicle_col <- paste0(col, "_vehicle")  # Unique column for each marker's vehicle value
+    
+    df <- df %>%
+      group_by(Chemical, Group, Treatment_Type = ifelse(str_detect(Treatment, "LPS"), "LPS", "PHA")) %>%
+      mutate(
+        !!sym(vehicle_col) := if_else(Treatment %in% c("LPS + Vehicle", "PHA + Vehicle"), .data[[col]], NA_real_)
+      ) %>%
+      # Debug print: Show before filling NAs
+      mutate(before_na_fill = !!sym(vehicle_col)) %>%
+      mutate(!!sym(vehicle_col) := zoo::na.locf(!!sym(vehicle_col), na.rm = FALSE)) %>%
+      mutate(!!sym(vehicle_col) := zoo::na.locf(!!sym(vehicle_col), fromLast = TRUE)) %>%
+      # Debug print: Show after filling NAs
+      mutate(after_na_fill = !!sym(vehicle_col)) %>%
+      mutate(!!sym(col) := .data[[col]] / !!sym(vehicle_col)) %>%
+      ungroup()
+  }
+  
+  # Debugging: Check where vehicle values were filled
+  print("Before NA fill (missing vehicle values per chemical):")
+  print(df %>% select(Chemical, Group, Treatment, ends_with("before_na_fill")) %>% 
+          filter(rowSums(is.na(select(., ends_with("before_na_fill")))) > 0))
+
+  print("After NA fill (missing vehicle values per chemical):")
+  print(df %>% select(Chemical, Group, Treatment, ends_with("after_na_fill")) %>% 
+          filter(rowSums(is.na(select(., ends_with("after_na_fill")))) > 0))
+
+  df <- df %>%
+    mutate(across(all_of(numeric_columns), ~ replace_na(., 0)))
+  
+  return(df)
+}
+
+ normalized_data <- normalize_by_vehicle(cleaned_data)
+
+# Add reciprocal "_fi" columns
+fi_columns <- grep("_fi$", names(normalized_data), value = TRUE)
+for (col in fi_columns) {
+  new_col_name <- paste0(col, "_reciprocal")
+  normalized_data[[new_col_name]] <- 1 / normalized_data[[col]]
+}
+
+# Subset for PHA and LPS
+pha_data <- normalized_data %>% filter(str_detect(Treatment, "PHA"))
+lps_data <- normalized_data %>% filter(str_detect(Treatment, "LPS"))
+
+columns <- c("live", "CD3", "CD4", "CD8", "CD3_fi", "CD4_fi", "CD8_fi","CD3_divided", "CD4_divided", "CD8_divided", "CD4_fi_reciprocal", "CD3_fi_reciprocal", "CD8_fi_reciprocal", "Ms", "Ms_fi_reciprocal", "Ms_divided")
+
+# Create datasets
+create_datasets <- function(data, prefix) {
+  map(columns, ~ data %>%
+        select(Group, Treatment, Sex, Smokers, Chemical, all_of(.x)) %>%
+        rename(Statistic = all_of(.x))) %>%
+    set_names(paste0(prefix, "_", columns))
+}
+
+pha_datasets <- create_datasets(pha_data, "PHA")
+lps_datasets <- create_datasets(lps_data, "LPS")
+datasets <- c(pha_datasets, lps_datasets)
+```
+
+#Heatmap PHA
+```{r}
+chemical_order <- c("PFOS", "PFOA", "PFNA", "PFDA", "PFHxS", "GenX")
+
+# Filter out the specific rows from each dataset in the list
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "PFHxS" & Group == "M4"))
+})
+
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "GenX" & Group == "F4"))
+})
+
+# Specify the objects to include in the dose-response plots
+selected_objects <- c("PHA_CD3_fi_reciprocal", "PHA_CD4_fi_reciprocal", "PHA_CD8_fi_reciprocal")
+filtered_datasets <- datasets[names(datasets) %in% selected_objects]
+
+# Initialize an empty data frame for combined data
+combined_data <- data.frame()
+significance_results <- list()
+
+for (dataset_name in names(filtered_datasets)) {
+  dataset <- filtered_datasets[[dataset_name]]
+  
+  # Loop over unique chemicals to generate separate plots
+  unique_chemicals <- unique(dataset$Chemical)
+
+  for (chem in unique_chemicals) {
+    chem_data <- dataset %>% filter(Chemical == chem)
+
+    # Perform ANOVA
+    anova_model <- aov(Statistic ~ Treatment + Error(Group/Treatment), data = chem_data)
+    tukey_results <- emmeans(anova_model, pairwise ~ Treatment)
+
+    # Convert Tukey results to a dataframe
+    pairwise_results <- as.data.frame(tukey_results$contrasts)
+
+    # Add significance labels based on p-values
+    pairwise_results <- pairwise_results %>%
+      mutate(
+        significance = case_when(
+          p.value < 0.001 ~ "***",
+          p.value < 0.01 ~ "**",
+          p.value < 0.05 ~ "*",
+          p.value >= 0.05 & p.value < 0.099 ~ ".",)
+      ) %>%
+      separate(contrast, into = c("group1", "group2"), sep = " - ") %>%
+      mutate(
+        group1 = str_replace_all(group1, "[()]", ""),
+        group2 = str_replace_all(group2, "[()]", "")
+      )
+
+    # Define max y-value for placing significance stars
+    max_y <- max(chem_data$Statistic, na.rm = TRUE)
+    increment <- max_y * 0.05  # Adjust increment based on max Y
+
+    significance_labels <- pairwise_results %>%
+      filter(group1 %in% "PHA + Vehicle" | group2 %in% "PHA + Vehicle") %>%
+      mutate(
+        y.position = max_y + (row_number() - 1) * increment
+      )
+    
+    # Add significance results to the list with both chemical and dataset names
+    if (!is.list(significance_results[[dataset_name]])) {
+      significance_results[[dataset_name]] <- list()
+    }
+    significance_results[[dataset_name]][[chem]] <- significance_labels
+  }
+}
+
+# Initialize an empty data frame to store the transformed results
+significance_df <- data.frame()
+
+# Loop over each object (dataset) in significance_results
+for (dataset_name in names(significance_results)) {
+  for (chem in names(significance_results[[dataset_name]])) {
+    # Get the significance results for the current object and chemical
+    significance_labels <- significance_results[[dataset_name]][[chem]]
+    
+    # Add a new column for the chemical and dataset name
+    significance_labels$chemical <- chem
+    significance_labels$dataset_name <- dataset_name
+    
+    # Append to the final data frame
+    significance_df <- rbind(significance_df, significance_labels)
+}
+}
+# Ensure the data frame is ordered by chemical and dataset_name
+significance_df <- significance_df %>%
+  arrange(chemical, dataset_name)
+
+# View the final data frame
+head(significance_df)
+
+# Combine the data for plotting
+combined_data <- data.frame()
+
+for (dataset_name in names(filtered_datasets)) {
+  dataset <- filtered_datasets[[dataset_name]]
+  
+  mean_data <- dataset %>%
+    group_by(Chemical, Treatment) %>%
+    summarise(
+      mean_stat = mean(Statistic, na.rm = TRUE),
+      se_stat = sd(Statistic, na.rm = TRUE) / sqrt(n()),
+      .groups = "drop"
+    )
+  
+  mean_data$Dataset <- dataset_name
+  mean_data$Marker <- case_when(
+    grepl("CD3", dataset_name) ~ "CD3",
+    grepl("CD4", dataset_name) ~ "CD4",
+    grepl("CD8", dataset_name) ~ "CD8"
+  )
+  
+  combined_data <- rbind(combined_data, mean_data)
+}
+
+filtered_data <- combined_data %>%
+  mutate(
+    Treatment = str_replace(Treatment, "^(LPS|PHA)[ ]?(\\+ )?", "") %>%
+                str_remove("uM") %>%
+                str_trim(),
+    log_Treatment = log10(as.numeric(replace(Treatment, Treatment == "Vehicle", "0")) + 1),
+    Chemical = factor(Chemical, levels = chemical_order)
+  )
+significance_df <- significance_df %>%
+  mutate(
+    group2 = str_replace(group2, "^(LPS|PHA)[ ]?(\\+ )?", "") %>%
+                str_remove("uM") %>%
+                str_trim()
+  )
+# Loop through each row in filtered_data and assign significance values
+for (i in 1:nrow(filtered_data)) {
+  # Find the matching significance for each row in filtered_data
+  match_significance <- significance_df %>%
+    filter(chemical == filtered_data$Chemical[i], 
+           dataset_name == filtered_data$Dataset[i],
+           group2 == filtered_data$Treatment[i]) %>%
+    slice_head(n = 1) %>%   # Ensure only the first match is selected
+    select(significance) %>%
+    pull()  # Extract the value
+  
+  # If a match is found, assign the significance value to the corresponding row
+  if (length(match_significance) == 1) {
+    filtered_data$significance[i] <- match_significance
+  } else {
+    # Optionally handle cases where no match is found or multiple matches are found
+    filtered_data$significance[i] <- NA  # Or any default value if no match
+  }
+}
+
+
+
+# Ensure significance values are correctly formatted
+filtered_data <- filtered_data %>%
+  mutate(significance = ifelse(is.na(significance), "", significance))
+
+# Define the correct order for Treatment (bottom to top)
+treatment_levels <- c("Vehicle", "0.5", "12.5", "25", "50", "100")
+
+# Apply the order to the dataset
+filtered_data <- filtered_data %>%
+  mutate(Treatment = factor(Treatment, levels = treatment_levels))
+plot_file <- paste0(output_dir, "PHA_heat.png")
+png(plot_file, width = 3000, height = 2000, res = 300)
+
+# Define the heatmap plot
+heatmap_plot <- ggplot(filtered_data, aes(x = Marker, y = Treatment, fill = mean_stat)) +
+  geom_tile(color = "white") +  # Heatmap tiles
+  geom_text(aes(label = significance), color = "black", size = 5) +  # Add significance labels
+  scale_fill_viridis_c(option = "plasma", name = "Relative % Divided", 
+  limits =c(0.9, 1.8)) +  # Color scale
+  labs(x = "T-cell Marker", y = "Treatment", title = "Heatmap of T-cell Proliferation") +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Arial", size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  ) +
+  facet_grid(~Chemical, space = "free", scales = "free", switch = "x")  # Align chemicals
+
+# Print the plot
+print(heatmap_plot)
+dev.off()
+
+```
+
+#Heatmap LPS
+```{r}
+chemical_order <- c("PFOS", "PFOA", "PFNA", "PFDA", "PFHxS", "GenX")
+
+# Filter out the specific rows from each dataset in the list
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "PFHxS" & Group == "M4"))
+})
+
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "GenX" & Group == "F4"))
+})
+
+# Specify the objects to include in the dose-response plots
+selected_objects <- c("LPS_CD3_fi_reciprocal", "LPS_CD4_fi_reciprocal", "LPS_CD8_fi_reciprocal")
+filtered_datasets <- datasets[names(datasets) %in% selected_objects]
+
+# Initialize an empty data frame for combined data
+combined_data <- data.frame()
+significance_results <- list()
+
+for (dataset_name in names(filtered_datasets)) {
+  dataset <- filtered_datasets[[dataset_name]]
+  
+  # Loop over unique chemicals to generate separate plots
+  unique_chemicals <- unique(dataset$Chemical)
+
+  for (chem in unique_chemicals) {
+    chem_data <- dataset %>% filter(Chemical == chem)
+
+    # Perform ANOVA
+    anova_model <- aov(Statistic ~ Treatment + Error(Group/Treatment), data = chem_data)
+    tukey_results <- emmeans(anova_model, pairwise ~ Treatment)
+
+    # Convert Tukey results to a dataframe
+    pairwise_results <- as.data.frame(tukey_results$contrasts)
+
+    # Add significance labels based on p-values
+    pairwise_results <- pairwise_results %>%
+      mutate(
+        significance = case_when(
+          p.value < 0.001 ~ "***",
+          p.value < 0.01 ~ "**")
+      ) %>%
+      separate(contrast, into = c("group1", "group2"), sep = " - ") %>%
+      mutate(
+        group1 = str_replace_all(group1, "[()]", ""),
+        group2 = str_replace_all(group2, "[()]", "")
+      )
+
+    # Define max y-value for placing significance stars
+    max_y <- max(chem_data$Statistic, na.rm = TRUE)
+    increment <- max_y * 0.05  # Adjust increment based on max Y
+
+    significance_labels <- pairwise_results %>%
+      filter(group1 %in% "LPS + Vehicle" | group2 %in% "LPS + Vehicle") %>%
+      mutate(
+        y.position = max_y + (row_number() - 1) * increment
+      )
+    
+    # Add significance results to the list with both chemical and dataset names
+    if (!is.list(significance_results[[dataset_name]])) {
+      significance_results[[dataset_name]] <- list()
+    }
+    significance_results[[dataset_name]][[chem]] <- significance_labels
+  }
+}
+
+# Initialize an empty data frame to store the transformed results
+significance_df <- data.frame()
+
+# Loop over each object (dataset) in significance_results
+for (dataset_name in names(significance_results)) {
+  for (chem in names(significance_results[[dataset_name]])) {
+    # Get the significance results for the current object and chemical
+    significance_labels <- significance_results[[dataset_name]][[chem]]
+    
+    # Add a new column for the chemical and dataset name
+    significance_labels$chemical <- chem
+    significance_labels$dataset_name <- dataset_name
+    
+    # Append to the final data frame
+    significance_df <- rbind(significance_df, significance_labels)
+}
+}
+# Ensure the data frame is ordered by chemical and dataset_name
+significance_df <- significance_df %>%
+  arrange(chemical, dataset_name)
+
+# View the final data frame
+head(significance_df)
+
+# Combine the data for plotting
+combined_data <- data.frame()
+
+for (dataset_name in names(filtered_datasets)) {
+  dataset <- filtered_datasets[[dataset_name]]
+  
+  mean_data <- dataset %>%
+    group_by(Chemical, Treatment) %>%
+    summarise(
+      mean_stat = mean(Statistic, na.rm = TRUE),
+      se_stat = sd(Statistic, na.rm = TRUE) / sqrt(n()),
+      .groups = "drop"
+    )
+  
+  mean_data$Dataset <- dataset_name
+  mean_data$Marker <- case_when(
+    grepl("CD3", dataset_name) ~ "CD3",
+    grepl("CD4", dataset_name) ~ "CD4",
+    grepl("CD8", dataset_name) ~ "CD8"
+  )
+  
+  combined_data <- rbind(combined_data, mean_data)
+}
+
+filtered_data <- combined_data %>%
+  mutate(
+    Treatment = str_replace(Treatment, "^(LPS|PHA)[ ]?(\\+ )?", "") %>%
+                str_remove("uM") %>%
+                str_trim(),
+    log_Treatment = log10(as.numeric(replace(Treatment, Treatment == "Vehicle", "0")) + 1),
+    Chemical = factor(Chemical, levels = chemical_order)
+  )
+significance_df <- significance_df %>%
+  mutate(
+    group2 = str_replace(group2, "^(LPS|PHA)[ ]?(\\+ )?", "") %>%
+                str_remove("uM") %>%
+                str_trim()
+  )
+# Loop through each row in filtered_data and assign significance values
+for (i in 1:nrow(filtered_data)) {
+  # Find the matching significance for each row in filtered_data
+  match_significance <- significance_df %>%
+    filter(chemical == filtered_data$Chemical[i], 
+           dataset_name == filtered_data$Dataset[i],
+           group2 == filtered_data$Treatment[i]) %>%
+    slice_head(n = 1) %>%   # Ensure only the first match is selected
+    select(significance) %>%
+    pull()  # Extract the value
+  
+  # If a match is found, assign the significance value to the corresponding row
+  if (length(match_significance) == 1) {
+    filtered_data$significance[i] <- match_significance
+  } else {
+    # Optionally handle cases where no match is found or multiple matches are found
+    filtered_data$significance[i] <- NA  # Or any default value if no match
+  }
+}
+
+
+
+# Ensure significance values are correctly formatted
+filtered_data <- filtered_data %>%
+  mutate(significance = ifelse(is.na(significance), "", significance))
+
+# Define the correct order for Treatment (bottom to top)
+treatment_levels <- c("Vehicle", "0.5", "12.5", "25", "50", "100")
+
+# Apply the order to the dataset
+filtered_data <- filtered_data %>%
+  mutate(Treatment = factor(Treatment, levels = treatment_levels))
+plot_file <- paste0(output_dir, "LPS_heat.png")
+png(plot_file, width = 3000, height = 2000, res = 300)
+
+# Define the heatmap plot
+heatmap_plot <- ggplot(filtered_data, aes(x = Marker, y = Treatment, fill = mean_stat)) +
+  geom_tile(color = "white") +  # Heatmap tiles
+  geom_text(aes(label = significance), color = "black", size = 5) +  # Add significance labels
+  scale_fill_viridis_c(option = "plasma", name = "Relative % Divided", 
+  limits =c(0.9, 1.8)) +  # Color scale
+  labs(x = "T-cell Marker", y = "Treatment", title = "Heatmap of T-cell Proliferation") +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Arial", size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  ) +
+  facet_grid(~Chemical, space = "free", scales = "free", switch = "x")  # Align chemicals
+
+# Print the plot
+print(heatmap_plot)
+dev.off()
+
+```
+
+#dose-response curve % divided PHA
+
+```{r}
+chemical_order <- c("PFOS", "PFOA", "PFNA", "PFDA", "PFHxS", "GenX")
+
+# Filter out the specific rows from each dataset in the list
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "PFHxS" & Group == "M4"))
+})
+
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "GenX" & Group == "F4"))
+})
+
+
+# Specify the objects to include in the dose-response plots
+selected_objects <- c("PHA_CD3_divided", "PHA_CD4_divided", "PHA_CD8_divided", "PHA_live")
+filtered_datasets <- datasets[names(datasets) %in% selected_objects]
+
+# Initialize an empty data frame for combined data
+combined_data <- data.frame()
+significance_results <- list()
+
+for (dataset_name in names(filtered_datasets)) {
+  dataset <- filtered_datasets[[dataset_name]]
+  
+  # Loop over unique chemicals to generate separate plots
+  unique_chemicals <- unique(dataset$Chemical)
+
+  for (chem in unique_chemicals) {
+    chem_data <- dataset %>% filter(Chemical == chem)
+
+    # Perform ANOVA
+    anova_model <- aov(Statistic ~ Treatment + Error(Group/Treatment), data = chem_data)
+    tukey_results <- emmeans(anova_model, pairwise ~ Treatment)
+
+    # Convert Tukey results to a dataframe
+      pairwise_results <- as.data.frame(tukey_results$contrasts)
+pairwise_results <- pairwise_results %>%
+      mutate(
+        significance = case_when(
+            
+                p.value < 0.001 ~ "***",
+                p.value < 0.01 ~ "**",
+                p.value < 0.05 ~ "*",
+                p.value >= 0.05 & p.value < 0.099 ~ ".",
+                TRUE ~ "")
+      ) %>%
+      separate(contrast, into = c("group1", "group2"), sep = " - ") %>%
+      mutate(
+        group1 = str_replace_all(group1, "[()]", ""),
+        group2 = str_replace_all(group2, "[()]", "")
+      )
+
+   # Define max y-value for placing significance stars
+    max_y <- max(chem_data$Statistic, na.rm = TRUE)
+    increment <- max_y * 0.05  # Adjust increment based on max Y
+
+    significance_labels <- pairwise_results %>%
+      filter(group1 %in% "PHA + Vehicle" | group2 %in% "PHA + Vehicle") %>%
+      mutate(
+        y.position = max_y + (row_number() - 1) * increment
+      )
+    
+    # Add significance results to the list with both chemical and dataset names
+    if (!is.list(significance_results[[dataset_name]])) {
+      significance_results[[dataset_name]] <- list()
+    }
+    significance_results[[dataset_name]][[chem]] <- significance_labels
+  }
+}
+    
+
+
+# Initialize an empty data frame to store the transformed results
+significance_df <- data.frame()
+
+# Loop over each object (dataset) in significance_results
+for (dataset_name in names(significance_results)) {
+  for (chem in names(significance_results[[dataset_name]])) {
+    # Get the significance results for the current object and chemical
+    significance_labels <- significance_results[[dataset_name]][[chem]]
+    
+    # Add a new column for the chemical and dataset name
+    significance_labels$chemical <- chem
+    significance_labels$dataset_name <- dataset_name
+    
+    # Append to the final data frame
+    significance_df <- rbind(significance_df, significance_labels)
+}
+}
+# Ensure the data frame is ordered by chemical and dataset_name
+significance_df <- significance_df %>%
+  arrange(chemical, dataset_name)
+
+# View the final data frame
+head(significance_df)
+
+# Combine the data for plotting
+combined_data <- data.frame()
+
+for (dataset_name in names(filtered_datasets)) {
+  dataset <- filtered_datasets[[dataset_name]]
+  
+  mean_data <- dataset %>%
+    group_by(Chemical, Treatment) %>%
+    summarise(
+      mean_stat = mean(Statistic, na.rm = TRUE),
+      se_stat = std.error(Statistic) * 2.365,
+      .groups = "drop"
+    )
+  
+  mean_data$Dataset <- dataset_name
+  mean_data$Marker <- case_when(
+    grepl("CD3", dataset_name) ~ "CD3",
+    grepl("CD4", dataset_name) ~ "CD4",
+    grepl("CD8", dataset_name) ~ "CD8",
+    grepl("live", dataset_name) ~ "Live"
+  )
+  
+  combined_data <- rbind(combined_data, mean_data)
+}
+
+filtered_data <- combined_data %>%
+  mutate(
+    Treatment = str_replace(Treatment, "^(LPS|PHA)[ ]?(\\+ )?", "") %>%
+                str_remove("uM") %>%
+                str_trim(),
+    log_Treatment = log10(as.numeric(replace(Treatment, Treatment == "Vehicle", "0")) + 1),
+    Chemical = factor(Chemical, levels = chemical_order)
+  )
+significance_df <- significance_df %>%
+  mutate(
+    group2 = str_replace(group2, "^(LPS|PHA)[ ]?(\\+ )?", "") %>%
+                str_remove("uM") %>%
+                str_trim()
+  )
+# Loop through each row in filtered_data and assign significance values
+for (i in 1:nrow(filtered_data)) {
+  # Find the matching significance for each row in filtered_data
+  match_significance <- significance_df %>%
+    filter(chemical == filtered_data$Chemical[i], 
+           dataset_name == filtered_data$Dataset[i],
+           group2 == filtered_data$Treatment[i]) %>%
+    slice_head(n = 1) %>%   # Ensure only the first match is selected
+    select(significance) %>%
+    pull()  # Extract the value
+  
+  # If a match is found, assign the significance value to the corresponding row
+  if (length(match_significance) == 1) {
+    filtered_data$significance[i] <- match_significance
+  } else {
+    # Optionally handle cases where no match is found or multiple matches are found
+    filtered_data$significance[i] <- NA  # Or any default value if no match
+  }
+}
+
+vehicle_data_ribbon <- filtered_data %>%
+  filter(Treatment == "Vehicle") %>%
+  group_by(Marker, Chemical) %>%
+  summarise(
+    ribbon_min = mean(mean_stat - se_stat, na.rm = TRUE),
+    ribbon_max = mean(mean_stat + se_stat, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    filtered_data %>%
+      group_by(Marker, Chemical) %>%
+      summarise(
+        x_min = min(log_Treatment, na.rm = TRUE),
+        x_max = max(log_Treatment, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("Marker", "Chemical")
+  ) %>%
+  # Add log_Treatment and mean_stat to the dataset
+  left_join(
+    filtered_data %>%
+      select(Marker, Chemical, log_Treatment, mean_stat) %>%
+      distinct(),
+    by = c("Marker", "Chemical")
+  ) %>%
+  mutate(log_Treatment = purrr::map2(x_min, x_max, ~seq(.x, .y, length.out = 100))) %>%
+  unnest(cols = c(log_Treatment))  # Unnesting log_Treatment to make it a column
+
+
+
+filtered_data$y_position_label <- filtered_data$mean_stat + filtered_data$se_stat + 5
+
+# Define PHA plot with Vehicle ribbon
+plot_file <- paste0(output_dir, "PHA.png")
+png(plot_file, width = 3000, height = 2000, res = 300)
+
+plot <- ggplot(filtered_data, aes(x = log_Treatment, y = mean_stat, color = Chemical)) +
+  geom_point(size = 2) +
+ geom_ribbon(
+    data = vehicle_data_ribbon,
+    aes(x = log_Treatment, ymin = ribbon_min, ymax = ribbon_max, fill = Chemical),
+    inherit.aes = FALSE,
+    alpha = 0.2
+  ) +
+  geom_errorbar(aes(ymin = mean_stat - se_stat, ymax = mean_stat + se_stat), width = 0.1) +
+  facet_grid(Marker ~ Chemical, scales = "fixed") +
+scale_color_manual(values = custom_colors) +  
+  scale_fill_manual(values = custom_colors) + 
+  labs(x = "Log10 Concentration (µM)", y = "Percentage Divided (%)", color = "Chemical") +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Arial", size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom",
+    panel.grid.major = element_line(size = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+plot <- plot + 
+  geom_text(
+    data = filtered_data[!is.na(filtered_data$significance), ],
+    aes(x = log_Treatment, y = y_position_label, label = significance, color = Chemical),  # Match text color to Chemical
+    size = 5, check_overlap = F
+  )
+
+print(plot)
+dev.off()
+```
+#dose-response LPS
+```{r}
+chemical_order <- c("PFOS", "PFOA", "PFNA", "PFDA", "PFHxS", "GenX")
+
+# Filter out the specific rows from each dataset in the list
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "PFHxS" & Group == "M4"))
+})
+
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "GenX" & Group == "F4"))
+})
+
+
+# Specify the objects to include in the dose-response plots
+selected_objects <- c("LPS_Ms_divided","LPS_live")
+filtered_datasets <- datasets[names(datasets) %in% selected_objects]
+
+
+# Initialize an empty data frame for combined data
+combined_data <- data.frame()
+significance_results <- list()
+
+for (dataset_name in names(filtered_datasets)) {
+  dataset <- filtered_datasets[[dataset_name]]
+  
+  # Loop over unique chemicals to generate separate plots
+  unique_chemicals <- unique(dataset$Chemical)
+
+  for (chem in unique_chemicals) {
+    chem_data <- dataset %>% filter(Chemical == chem)
+
+    # Perform ANOVA
+    anova_model <- aov(Statistic ~ Treatment + Error(Group/Treatment), data = chem_data)
+    tukey_results <- emmeans(anova_model, pairwise ~ Treatment)
+
+    # Convert Tukey results to a dataframe
+    pairwise_results <- as.data.frame(tukey_results$contrasts)
+
+    # Add significance labels based on p-values
+    pairwise_results <- pairwise_results %>%
+      mutate(
+        significance = case_when(
+            p.value < 0.001 ~ "",
+        )
+      ) %>%
+      separate(contrast, into = c("group1", "group2"), sep = " - ") %>%
+      mutate(
+        group1 = str_replace_all(group1, "[()]", ""),
+        group2 = str_replace_all(group2, "[()]", "")
+      )
+
+    # Define max y-value for placing significance stars
+    max_y <- max(chem_data$Statistic, na.rm = TRUE)
+    increment <- max_y * 0.05  # Adjust increment based on max Y
+
+    significance_labels <- pairwise_results %>%
+      filter(group1 %in% "LPS + Vehicle" | group2 %in% "LPS + Vehicle") %>%
+      mutate(
+        y.position = max_y + (row_number() - 1) * increment
+      )
+    
+    # Add significance results to the list with both chemical and dataset names
+    if (!is.list(significance_results[[dataset_name]])) {
+      significance_results[[dataset_name]] <- list()
+    }
+    significance_results[[dataset_name]][[chem]] <- significance_labels
+  }
+}
+
+# Initialize an empty data frame to store the transformed results
+significance_df <- data.frame()
+
+# Loop over each object (dataset) in significance_results
+for (dataset_name in names(significance_results)) {
+  for (chem in names(significance_results[[dataset_name]])) {
+    # Get the significance results for the current object and chemical
+    significance_labels <- significance_results[[dataset_name]][[chem]]
+    
+    # Add a new column for the chemical and dataset name
+    significance_labels$chemical <- chem
+    significance_labels$dataset_name <- dataset_name
+    
+    # Append to the final data frame
+    significance_df <- rbind(significance_df, significance_labels)
+}
+}
+# Ensure the data frame is ordered by chemical and dataset_name
+significance_df <- significance_df %>%
+  arrange(chemical, dataset_name)
+
+# View the final data frame
+head(significance_df)
+
+# Combine the data for plotting
+combined_data <- data.frame()
+
+for (dataset_name in names(filtered_datasets)) {
+  dataset <- filtered_datasets[[dataset_name]]
+  
+  mean_data <- dataset %>%
+    group_by(Chemical, Treatment) %>%
+    summarise(
+      mean_stat = mean(Statistic, na.rm = TRUE),
+      se_stat = std.error(Statistic) * 2.365,
+      .groups = "drop"
+    )
+  
+  mean_data$Dataset <- dataset_name
+  mean_data$Marker <- case_when(
+    grepl("Ms", dataset_name) ~ "Non t-cells",
+    grepl("live", dataset_name) ~ "Live"
+)
+  
+  combined_data <- rbind(combined_data, mean_data)
+}
+
+filtered_data <- combined_data %>%
+  mutate(
+    Treatment = str_replace(Treatment, "^(LPS|PHA)[ ]?(\\+ )?", "") %>%
+                str_remove("uM") %>%
+                str_trim(),
+    log_Treatment = log10(as.numeric(replace(Treatment, Treatment == "Vehicle", "0")) + 1),
+    Chemical = factor(Chemical, levels = chemical_order)
+  )
+significance_df <- significance_df %>%
+  mutate(
+    group2 = str_replace(group2, "^(LPS|PHA)[ ]?(\\+ )?", "") %>%
+                str_remove("uM") %>%
+                str_trim()
+  )
+# Loop through each row in filtered_data and assign significance values
+for (i in 1:nrow(filtered_data)) {
+  # Find the matching significance for each row in filtered_data
+  match_significance <- significance_df %>%
+    filter(chemical == filtered_data$Chemical[i], 
+           dataset_name == filtered_data$Dataset[i],
+           group2 == filtered_data$Treatment[i]) %>%
+    slice_head(n = 1) %>%   # Ensure only the first match is selected
+    select(significance) %>%
+    pull()  # Extract the value
+  
+  # If a match is found, assign the significance value to the corresponding row
+  if (length(match_significance) == 1) {
+    filtered_data$significance[i] <- match_significance
+  } else {
+    # Optionally handle cases where no match is found or multiple matches are found
+    filtered_data$significance[i] <- NA  # Or any default value if no match
+  }
+}
+
+
+vehicle_data_ribbon <- filtered_data %>%
+  filter(Treatment == "Vehicle") %>%
+  group_by(Marker, Chemical) %>%
+  summarise(
+    ribbon_min = mean(mean_stat - se_stat, na.rm = TRUE),
+    ribbon_max = mean(mean_stat + se_stat, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    filtered_data %>%
+      group_by(Marker, Chemical) %>%
+      summarise(
+        x_min = min(log_Treatment, na.rm = TRUE),
+        x_max = max(log_Treatment, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("Marker", "Chemical")
+  ) %>%
+  # Add log_Treatment and mean_stat to the dataset
+  left_join(
+    filtered_data %>%
+      select(Marker, Chemical, log_Treatment, mean_stat) %>%
+      distinct(),
+    by = c("Marker", "Chemical")
+  ) %>%
+  mutate(log_Treatment = purrr::map2(x_min, x_max, ~seq(.x, .y, length.out = 100))) %>%
+  unnest(cols = c(log_Treatment))  # Unnesting log_Treatment to make it a column
+
+
+
+filtered_data$y_position_label <- filtered_data$mean_stat + filtered_data$se_stat + 5
+filtered_data <- filtered_data %>%
+  group_by(Chemical, Marker) %>%
+  arrange(log_Treatment) %>%
+  mutate(
+    y_position_label = mean_stat + se_stat + 2 + (row_number() * 3)  # stagger by dose
+  ) %>%
+  ungroup()
+
+# Define PHA plot with Vehicle ribbon
+plot_file <- paste0(output_dir, "LPS.png")
+png(plot_file, width = 3000, height = 1200, res = 300)
+
+plot <- ggplot(filtered_data, aes(x = log_Treatment, y = mean_stat, color = Chemical)) +
+  geom_point(size = 2) +
+ geom_ribbon(
+    data = vehicle_data_ribbon,
+    aes(x = log_Treatment, ymin = ribbon_min, ymax = ribbon_max, fill = Chemical),
+    inherit.aes = FALSE,
+    alpha = 0.2
+  ) +
+  geom_errorbar(aes(ymin = mean_stat - se_stat, ymax = mean_stat + se_stat), width = 0.1) +
+  facet_grid(Marker ~ Chemical, scales = "fixed") +
+scale_color_manual(values = custom_colors) +  
+  scale_fill_manual(values = custom_colors) + 
+  labs(x = "Log10 Concentration (µM)", y = "Percentage Divided (%)", color = "Chemical") +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Arial", size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom",
+    panel.grid.major = element_line(size = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+plot <- plot + 
+  coord_cartesian(ylim = c(0, 100)) + # Set your desired y-axis range here
+geom_text(
+  data = filtered_data[!is.na(filtered_data$significance), ],
+  aes(x = log_Treatment, y = y_position_label, label = significance, color = Chemical),
+  size = 5,
+  check_overlap = FALSE
+)
+
+print(plot)
+
+dev.off()
+```
+#Two-way ANOVA (sex/smoking)
+```{r}
+# Define a list of datasets to loop through
+datasets <- c(pha_datasets, lps_datasets)
+# Filter out the specific row from each dataset in the list
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "PFHxS" & Group == "M4"))
+})
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "GenX" & Group == "F4"))
+})
+# Loop through each dataset
+for (dataset_name in names(datasets)) {
+  dataset <- datasets[[dataset_name]]
+  
+  # Ensure the dataset has the necessary structure for repeated measures ANOVA
+  # Convert Group to a factor if it's not already
+  dataset$Group <- as.factor(dataset$Group)
+  dataset$Sex <- as.factor(dataset$Sex)
+  dataset$Smokers <- as.factor(dataset$Smokers)
+  dataset$Treatment <- as.factor(dataset$Treatment)
+  
+  # Fit the repeated measures ANOVA model
+  model <- aov(Statistic ~ Sex * Smokers + Error(Group/Treatment), data = dataset)
+  
+  # Print the ANOVA results
+  print(paste("Repeated Measures ANOVA results for dataset:", dataset_name))
+  print(summary(model))
+}
+```
+
+#Normalization and vairance testing
+```{r}
+# Define a list of datasets to loop through
+datasets <- c(pha_datasets, lps_datasets)
+# Filter out the specific row from each dataset in the list
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "PFHxS" & Group == "M4"))
+})
+datasets <- lapply(datasets, function(df) {
+  df %>%
+    filter(!(Chemical == "GenX" & Group == "F4"))
+})
+levene_results <- lapply(datasets, function(dataset) {
+  leveneTest(Statistic ~ Treatment, data = dataset)
+})
+
+# Print the results of Levene's test
+print(levene_results)
+
+shapiro_results <- lapply(datasets, function(dataset) {
+  shapiro.test(dataset$Statistic)
+})
+
+# not normal
+print(shapiro_results)
+
+lapply(datasets, function(dataset) {
+  qqnorm(dataset$Statistic)
+  qqline(dataset$Statistic)
+})
+```
+
+
