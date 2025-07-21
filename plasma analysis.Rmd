@@ -1,0 +1,283 @@
+#Load libraries
+```{r}
+library(readxl)
+library(tidyr)   # For data manipulation
+library(dplyr)   # For data manipulation
+library(ggsignif)
+library(ggplot2)
+library(broom) 
+library(rstatix)
+library(ggpubr)
+library(stringr)
+library(viridis)
+library(emmeans)
+library(purrr)
+library(car)
+library(plotrix)
+library(extrafont)
+library(nhanesA)
+library(RNHANES)
+library(reshape)
+library(sjPlot)
+library(labelled)
+library(corrplot)
+  output_dir <- "../Plasma/plots_output/"
+dir.create(output_dir, showWarnings = FALSE)
+custom_colors <- c("#330597","#8405a7","#b12a90","#d35171","#f68f44","#fec029")
+
+```
+#Plasma data
+##NAHNES
+```{r}
+
+#nhanesTables('LAB', 2018)
+#nhanesTables("DEMO",2018)
+
+# prepare demographic data
+demo_2018 <- nhanes("DEMO_J")
+demo_2018$Gender <- demo_2018$RIAGENDR
+var_label(demo_2018) <- NULL
+
+#body metrics
+bmx_2018 <- nhanes("BMX_J")
+var_label(bmx_2018) <- NULL
+
+# prepare biochemistry data
+biochem_2018 <- nhanes("BIOPRO_J" )
+var_label(biochem_2018) <- NULL
+
+
+#prepare pfas data
+pfas_2018 <- nhanes("PFAS_J")
+pfas_2018$PFOS <- pfas_2018$LBXNFOS+pfas_2018$LBXMFOS
+pfas_2018$PFOA <- pfas_2018$LBXBFOA+pfas_2018$LBXNFOA
+var_label(pfas_2018) <- NULL
+#pfas_2018 <- pfas_2018[,c("SEQN","LBXPFDE", "LBXPFHS","LBXMPAH","LBXPFNA", "LBXPFUA","LBXNFOA", "LBXBFOA","LBXNFOS","LBXMFOS" )]
+pfas_2018 <- pfas_2018[,c("SEQN","LBXPFDE", "LBXPFHS","LBXMPAH","LBXPFNA", "LBXPFUA","PFOA","PFOS")]
+
+pfas2018_genx <- nhanes("SSPFAS_J")
+pfas2018_genx <- pfas2018_genx[,c("SEQN","SSGENX")]
+
+pfas_2018 <- left_join(pfas_2018, pfas2018_genx, by = "SEQN", keep = FALSE) 
+pfas2018_melt <- melt(pfas_2018, id.vars= "SEQN")
+
+#join
+demo_pfas_2018 <- left_join(demo_2018[,c("SEQN", "RIDAGEYR", "Gender")], pfas2018_melt, keep=FALSE)
+
+# rename for plotting
+demo_pfas_2018$variable <- str_replace_all(demo_pfas_2018$variable, "LBXPFDE", "PFDA") 
+demo_pfas_2018$variable <- str_replace_all(demo_pfas_2018$variable, "LBXPFHS", "PFHxS") 
+demo_pfas_2018$variable <- str_replace_all(demo_pfas_2018$variable, "LBXMPAH", "Me-PFOSA-AcOH")
+demo_pfas_2018$variable <- str_replace_all(demo_pfas_2018$variable, "LBXPFNA", "PFNA") 
+demo_pfas_2018$variable <- str_replace_all(demo_pfas_2018$variable, "LBXPFUA", "PFUA") 
+demo_pfas_2018$variable <- str_replace_all(demo_pfas_2018$variable, "LBXNFOA", "n-PFOA") 
+demo_pfas_2018$variable <- str_replace_all(demo_pfas_2018$variable, "LBXBFOA", "Sb-PFOA") 
+demo_pfas_2018$variable <- str_replace_all(demo_pfas_2018$variable, "LBXNFOS", "n-PFOS") 
+demo_pfas_2018$variable <- str_replace_all(demo_pfas_2018$variable, "LBXMFOS", "Sm-PFOS") 
+demo_pfas_2018$variable <- str_replace_all(demo_pfas_2018$variable, "SSGENX", "GenX") 
+demo_pfas_2018$Gender <- str_replace_all(demo_pfas_2018$Gender, "2", "Female") 
+demo_pfas_2018$Gender <- str_replace_all(demo_pfas_2018$Gender, "1", "Male")
+demo_pfas_2018 <- subset(demo_pfas_2018, value >0)
+
+### Plotting ####
+#add age grouping
+demo_pfas_2018 <- demo_pfas_2018%>%
+  mutate(cuts = cut(RIDAGEYR, c(10, 20, 30,40,50,60,70,80,90)))
+
+#summarize
+pfas_summary <- demo_pfas_2018 %>%
+  filter(variable %in% c("PFOS", "PFOA", "PFNA", "PFDA", "PFHxS", "GenX")) %>%
+  group_by(variable, Gender) %>%
+  summarize(
+    n = sum(!is.na(value) & value > 0),
+    geo_mean = exp(mean(log(value[value > 0]), na.rm = TRUE)),
+    ci_lower = exp(mean(log(value[value > 0]), na.rm = TRUE) - 1.96 * sd(log(value[value > 0]), na.rm = TRUE) / sqrt(n)),
+    ci_upper = exp(mean(log(value[value > 0]), na.rm = TRUE) + 1.96 * sd(log(value[value > 0]), na.rm = TRUE) / sqrt(n))
+  ) %>%
+  as.data.frame()
+pfas_summary <- pfas_summary %>%
+  dplyr::rename(
+    Compound = variable,
+    Sex = Gender,
+    GeometricMean = geo_mean,
+    CI_Lower = ci_lower,
+    CI_Upper = ci_upper
+  )
+```
+
+##5 chems v NHANES and CHMS
+
+```{r}
+# Read and preprocess the data
+data_Plasma <- read.csv("../Plasma/PFAS plasma results.csv")
+data_Plasma <- data_Plasma[-c(9:24), ]
+rownames(data_Plasma) <- data_Plasma$X
+data_Plasma <- data_Plasma[, !colnames(data_Plasma) %in% "X"]
+
+# Define MDL values for each compound
+mdl_values <- data.frame(
+  Compound = c("PFOA", "PFNA", "PFDA", "PFHxS", "PFOS"),
+  MDL = c(0.020, 0.014, 0.012, 0.018, 0.033)
+)
+
+# Convert "<MDL" values to NA
+data_Plasma[data_Plasma == "<MDL"] <- NA
+data_Plasma <- as.data.frame(lapply(data_Plasma, as.numeric), row.names = rownames(data_Plasma))
+
+# Reshape data to long format first
+filtered_data <- data_Plasma %>%
+  mutate(Sample = rownames(data_Plasma)) %>%
+  pivot_longer(cols = -Sample, names_to = "Compound", values_to = "Value")
+
+# Merge MDL values
+filtered_data <- filtered_data %>%
+  left_join(mdl_values, by = "Compound") %>%
+  mutate(Value = ifelse(is.na(Value), MDL / 2, Value))  # Replace non-detects with MDL/2
+
+# Filter for relevant PFAS compounds
+filtered_data <- filtered_data %>%
+  filter(Compound %in% c("PFOS", "PFOA", "PFNA", "PFDA", "PFHxS"))
+
+# Factorize Compound column
+filtered_data$Compound <- factor(filtered_data$Compound, levels = c("PFOS", "PFOA", "PFNA", "PFDA", "PFHxS"))
+
+# Assign Sex based on Sample name
+filtered_data <- filtered_data %>%
+  mutate(Sex = ifelse(grepl("^Female", Sample), "Female", "Male"))
+
+# Define first geometric mean values
+chms <- data.frame(
+  Compound = rep(c("PFOS", "PFOA", "PFNA", "PFDA", "PFHxS"), each = 2),
+  Sex = rep(c("Male", "Female"), times = 5),
+  GeometricMean = c(3.1, 2.1, 1.3, 1.1, 0.47, 0.4, 0.12, 0.12, 1, 0.56),
+  CI_Lower = c(2.8, 1.9, 1.2, 0.97, 0.43, 0.37, 0.11, 0.10, 0.91, 0.49),
+  CI_Upper = c(3.4, 2.4, 1.5, 1.2, 0.52, 0.44, 0.14, 0.14, 1.2, 0.64)
+)
+chms$Compound <- factor(chms$Compound, levels = levels(filtered_data$Compound))
+
+# Define second geometric mean (now with 95% CIs)
+nhanes <- pfas_summary
+
+plot_file <- paste0(output_dir, "nhaneschms.png")
+png(plot_file, width = 3000, height = 1000, res = 300)
+
+plot <- ggplot(filtered_data, aes(x = Compound, y = Value, color = Sample, group = Sample)) +
+  geom_col(aes(fill = Sample), position = position_dodge(width = 0.9), alpha = 0.5, color = "black") +
+  
+  # First set of geometric means (Blue)
+  geom_errorbar(
+    data = chms, aes(x = Compound, ymin = CI_Lower, ymax = CI_Upper, group = Sex),
+    color = "#00416a", width = 0.3, linewidth = 0.2, inherit.aes = FALSE, position = position_dodge(width = 0.9)
+  ) +
+  geom_crossbar(
+    data = chms, aes(x = Compound, y = GeometricMean, ymin = GeometricMean, ymax = GeometricMean, group = Sex),
+    color = "#00416a", linetype = "solid", fill = NA, linewidth = 0.3, inherit.aes = FALSE,
+    position = position_dodge(width = 0.9)
+  ) +
+
+  # Second set of geometric means (Gray)
+  geom_errorbar(
+    data = nhanes, aes(x = Compound, ymin = CI_Lower, ymax = CI_Upper, group = Sex),
+    color = "#555555", width = 0.2, linewidth = 0.3, inherit.aes = FALSE, position = position_dodge(width = 0.9)
+  ) +
+  geom_crossbar(
+    data = nhanes, aes(x = Compound, y = GeometricMean, ymin = GeometricMean, ymax = GeometricMean, group = Sex),
+    color = "#555555", linetype = "solid", fill = NA, linewidth = 0.3, inherit.aes = FALSE,
+    position = position_dodge(width = 0.9)
+  ) +
+
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Arial", size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black")
+  ) +
+  scale_fill_viridis(option = "plasma", discrete = TRUE) +
+  facet_wrap(~Sex) +
+  scale_y_continuous(expand = c(0, 0))
+print(plot)
+dev.off()
+```
+##All chems with LDL
+```{r}
+# Read and preprocess the data
+data_Plasma <- read.csv("../Plasma/PFAS plasma results.csv")
+
+data_Plasma <- subset(data_Plasma, select = -X)
+# Remove extra rows (assuming they are non-relevant)
+data_Plasma <- data_Plasma[-c(9:24), ]
+
+# Set row names and drop the redundant column
+rownames(data_Plasma) <- data_Plasma$X
+
+# Convert "<MDL" values to NA
+data_Plasma[data_Plasma == "<MDL"] <- NA
+data_Plasma <- as.data.frame(lapply(data_Plasma, as.numeric), row.names = rownames(data_Plasma))
+
+# Define MDL values
+mdl_values <- data.frame(
+  Compound = c("PFBA", "PFPeA", "PFHxA", "PFHpA", "PFOA", "PFNA", "PFDA", "PFUdA", 
+               "PFDoA", "PFTrDA", "PFTeDA", "PFBS", "PFPeS", "PFHxS", "PFHpS", 
+               "PFOS", "PFNS", "PFDS", "X4_2.FTS", "X6_2_FTS", "X8_2.FTS"),
+  MDL = c(0.019, 0.022, 0.012, 0.008, 0.020, 0.014, 0.012, 0.008, 0.014, 0.010, 
+          0.007, 0.012, 0.021, 0.018, 0.022, 0.033, 0.029, 0.025, 0.019, 0.021, 0.028)
+)
+
+
+# Reshape data to long format
+filtered_data <- data_Plasma %>%
+  mutate(Sample = rownames(data_Plasma)) %>%
+  pivot_longer(cols = -Sample, names_to = "Compound", values_to = "Value")
+
+# Merge MDL values into the dataset
+filtered_data <- filtered_data %>%
+  left_join(mdl_values, by = "Compound")
+
+# Replace non-detects (NA) with MDL/2
+filtered_data$Value <- ifelse(is.na(filtered_data$Value), filtered_data$MDL / 2, filtered_data$Value)
+
+# Compute mean levels for ordering compounds
+compound_order <- filtered_data %>%
+  group_by(Compound) %>%
+  summarize(MeanValue = mean(Value, na.rm = TRUE)) %>%
+  arrange(desc(MeanValue)) %>%
+  pull(Compound)
+
+# Convert Compound to a factor with ordered levels
+filtered_data$Compound <- factor(filtered_data$Compound, levels = compound_order)
+
+# Check data structure before plotting
+print(head(filtered_data))
+
+plot_file <- paste0(output_dir, "all_chem_plasma.png")
+png(plot_file, width = 3000, height = 1000, res = 300)
+
+plot <- ggplot(filtered_data, aes(x = Compound, y = Value, color = Sample, group = Sample)) +
+  stat_summary(
+    aes(fill = Sample),
+    fun = mean, geom = "bar", position = position_dodge(width = 0.9), alpha = 0.6, color = "black"
+  ) +
+  geom_errorbar(
+    data = filtered_data %>% filter(!is.na(MDL)),  # Ensure no NA values in MDL
+    aes(ymin = MDL, ymax = MDL),
+    color = "black", linetype = "dotted", width = 0.9, linewidth = 0.3
+  ) +  
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Arial", size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black")
+  ) +
+  scale_fill_viridis(option = "plasma", discrete = TRUE) +
+  scale_color_viridis(option = "plasma", discrete = TRUE, alpha = 1) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, max(filtered_data$Value, na.rm = TRUE) * 1.2)) + 
+  labs(y = "Concentration", x = "Compound", title = "PFAS Levels in Plasma with MDL")
+print(plot)
+dev.off()
+```
